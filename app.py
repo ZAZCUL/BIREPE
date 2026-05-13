@@ -240,7 +240,7 @@ TEXTO DEL MANIFIESTO:
 # ── Llamada a Gemini ─────────────────────────────────────────────────────────
 def extraer_datos_gemini(texto: str, api_key: str) -> dict:
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-2.0-flash")
 
     prompt = PROMPT_EXTRACCION.replace("{texto}", texto[:12000])  # límite seguro de tokens
 
