@@ -374,9 +374,10 @@ def generar_excel(registros: list, fecha_ingreso: str) -> bytes:
                 cell.alignment = Alignment(vertical="center", wrap_text=True)
 
         # Anchos de columna
+        from openpyxl.utils import get_column_letter
         anchos = [18, 35, 15, 14, 20, 20, 35, 30, 35, 28, 35, 28, 28]
         for i, ancho in enumerate(anchos, start=1):
-            col_letter = ws.cell(row=1, column=i).column_letter
+            col_letter = get_column_letter(i)
             ws.column_dimensions[col_letter].width = ancho
 
         # Congelar encabezados
