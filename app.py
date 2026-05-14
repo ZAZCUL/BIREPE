@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import pdfplumber
 import json
 import io
 import re
@@ -8,6 +7,8 @@ from datetime import date, datetime
 import google.generativeai as genai
 from dotenv import load_dotenv
 import os
+import fitz  # PyMuPDF
+import base64
 
 # ── Configuración de página ──────────────────────────────────────────────────
 st.set_page_config(
@@ -189,63 +190,74 @@ def get_api_key():
             pass
     return key
 
-# ── Extracción de texto del PDF ──────────────────────────────────────────────
-def extract_text_from_pdf(pdf_file) -> str:
-    text_pages = []
+# ── Conversión de PDF a imágenes base64 (funciona con cualquier PDF) ─────────
+def pdf_to_images_base64(pdf_file) -> list:
+    """Convierte cada página del PDF a imagen base64 para Gemini Vision."""
     try:
-        with pdfplumber.open(pdf_file) as pdf:
-            for i, page in enumerate(pdf.pages):
-                t = page.extract_text()
-                if t:
-                    text_pages.append(f"--- PÁGINA {i+1} ---\n{t}")
+        import fitz
+        import base64
+        pdf_bytes = pdf_file.read()
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        images = []
+        for i, page in enumerate(doc):
+            mat = fitz.Matrix(200/72, 200/72)
+            pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+            img_bytes = pix.tobytes("jpeg", jpg_quality=85)
+            b64 = base64.b64encode(img_bytes).decode("utf-8")
+            images.append({"page": i+1, "data": b64})
+        doc.close()
+        if not images:
+            raise RuntimeError("El PDF no tiene páginas.")
+        return images
     except Exception as e:
-        raise RuntimeError(f"No se pudo leer el PDF: {e}")
-    if not text_pages:
-        raise RuntimeError("El PDF no contiene texto extraíble (puede ser imagen escaneada sin OCR).")
-    return "\n\n".join(text_pages)
+        raise RuntimeError(f"No se pudo procesar el PDF: {e}")
 
-# ── Prompt de extracción ─────────────────────────────────────────────────────
-PROMPT_EXTRACCION = """Eres un experto en normativa ambiental mexicana (SEMARNAT/NOM-055-SEMARNAT-2003).
-Se te proporciona el texto extraído de un "Manifiesto de Entrega, Transporte y Recepción de Residuos Peligrosos" de México.
+# ── Prompt de extracción por visión ──────────────────────────────────────────
+PROMPT_VISION = """Eres un experto en normativa ambiental mexicana (SEMARNAT/NOM-055-SEMARNAT-2003).
+Analiza visualmente las imágenes del "Manifiesto de Entrega, Transporte y Recepción de Residuos Peligrosos" de México que se te proporcionan.
+El documento puede estar escaneado, escrito a mano o impreso. Lee cuidadosamente todos los campos visibles.
 
 Extrae EXACTAMENTE los siguientes campos y devuelve SOLO un objeto JSON válido (sin backticks, sin texto extra):
 
 {
-  "consecutivo": "Número de folio/manifiesto. Busca 'No.', 'Núm.', 'Folio', o secuencia numérica al inicio del documento. Ej: '047912'",
+  "consecutivo": "Número de folio/manifiesto. Busca 'No.', 'Núm.', 'Folio', o número grande destacado. Ej: '047912'",
   "nombre_residuo": "Nombre del residuo peligroso de la sección 5. Ej: 'ACEITE Y LUBRICANTE USADO Y GASTADO'",
   "cantidad": "Cantidad y unidad de la sección 5. Ej: '6,000 LTS' o '1.116 TON'. Si hay varias, sepáralas con coma.",
-  "cretib": "Características de peligrosidad CRETIB marcadas con X en sección 5. Solo las letras activas. Ej: 'T' o 'C,T' o 'C,R,E,T,I,B'",
-  "fecha_salida": "Fecha de la sección 7 (generador), donde dice 'Fecha:'. Formato DD/MM/AAAA.",
-  "responsable": "Nombre completo del responsable firmante de la sección 7 (generador). NO incluir transportista ni destinatario.",
-  "fase_siguiente": "Nombre y/o razón social del destinatario de la sección 15. Incluir texto entre paréntesis si lo hay. Ej: 'LUBRICANTES JUGUER S.A. DE C.V. (CENTRO DE ACOPIO)'",
-  "area_resguardo": "Mismo valor que fase_siguiente (nombre del destino/centro de acopio de sección 15).",
-  "transportista_nombre": "Nombre o razón social del transportista, secciones 8-12.",
-  "transportista_autorizacion": "Número de autorización SEMARNAT del transportista, sección 9. Formato alfanumérico.",
-  "destinatario_nombre": "Nombre o razón social del destinatario, secciones 15-17.",
+  "cretib": "Características de peligrosidad CRETIB marcadas con X o tache en sección 5. Solo las letras activas. Ej: 'T'",
+  "fecha_salida": "Fecha de la sección 7 (generador), donde dice 'Fecha:'. Formato DD/MM/AAAA. Ej: '20/DIC/2024'",
+  "responsable": "Nombre del responsable firmante de la sección 7 (generador). NO incluir transportista ni destinatario.",
+  "fase_siguiente": "Nombre y/o razón social del destinatario de la sección 15. Ej: 'LUBRICANTES JUGUER S.A. DE C.V.'",
+  "area_resguardo": "Mismo valor que fase_siguiente.",
+  "transportista_nombre": "Nombre o razón social del transportista, sección 8.",
+  "transportista_autorizacion": "Número de autorización SEMARNAT del transportista, sección 9. Ej: '05-35-PS-I-327D-2019'",
+  "destinatario_nombre": "Nombre o razón social del destinatario, sección 15.",
   "destinatario_autorizacion": "Número de autorización SEMARNAT del destinatario, sección 16."
 }
 
-REGLAS IMPORTANTES:
-- Si un campo no existe en el documento, usa exactamente: "No especificado"
-- Para CRETIB: solo las letras con marca/tache/X. Ejemplo: si solo T tiene X, responde "T"
-- Para fecha_salida: busca en la zona del generador (parte superior del manifiesto), no la del transportista ni destinatario
+REGLAS:
+- Si un campo no es visible o legible, usa exactamente: "No especificado"
+- Para CRETIB: observa las casillas marcadas con X o tache en la tabla de clasificación
 - El responsable es SOLO el de la sección 7 del generador
-- NO inventes datos. Si no está claro, usa "No especificado"
-- Responde ÚNICAMENTE el JSON, sin ningún texto adicional
-
-TEXTO DEL MANIFIESTO:
-{texto}
+- NO inventes datos
+- Responde ÚNICAMENTE el JSON, sin texto adicional
 """
 
-# ── Llamada a Gemini ─────────────────────────────────────────────────────────
-def extraer_datos_gemini(texto: str, api_key: str) -> dict:
+# ── Llamada a Gemini Vision ───────────────────────────────────────────────────
+def extraer_datos_gemini(images: list, api_key: str) -> dict:
+    import base64
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel("gemini-2.0-flash")
 
-    prompt = PROMPT_EXTRACCION.replace("{texto}", texto[:12000])  # límite seguro de tokens
+    # Construir contenido con todas las páginas como imágenes
+    content = [PROMPT_VISION]
+    for img in images:
+        content.append({
+            "mime_type": "image/jpeg",
+            "data": img["data"]
+        })
 
     response = model.generate_content(
-        prompt,
+        content,
         generation_config=genai.types.GenerationConfig(
             temperature=0.1,
             max_output_tokens=1500,
@@ -253,7 +265,6 @@ def extraer_datos_gemini(texto: str, api_key: str) -> dict:
     )
 
     raw = response.text.strip()
-    # Limpiar posibles backticks si el modelo los añade
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
 
@@ -262,7 +273,6 @@ def extraer_datos_gemini(texto: str, api_key: str) -> dict:
     except json.JSONDecodeError as e:
         raise ValueError(f"La IA devolvió JSON inválido: {e}\n\nRespuesta recibida:\n{raw[:500]}")
 
-    # Garantizar que todos los campos existan
     campos = [
         "consecutivo", "nombre_residuo", "cantidad", "cretib",
         "fecha_salida", "responsable", "fase_siguiente", "area_resguardo",
@@ -274,6 +284,7 @@ def extraer_datos_gemini(texto: str, api_key: str) -> dict:
             data[c] = "No especificado"
 
     return data
+
 
 # ── Generar Excel ────────────────────────────────────────────────────────────
 def generar_excel(registros: list, fecha_ingreso: str) -> bytes:
@@ -439,8 +450,8 @@ if procesar:
             with log_container:
                 with st.spinner(f"Extrayendo datos con IA... → {pdf_file.name}"):
                     try:
-                        texto = extract_text_from_pdf(pdf_file)
-                        datos = extraer_datos_gemini(texto, api_key)
+                        images = pdf_to_images_base64(pdf_file)
+                        datos = extraer_datos_gemini(images, api_key)
                         datos["_archivo"] = pdf_file.name
                         registros.append(datos)
                         st.markdown(
