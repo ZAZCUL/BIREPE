@@ -4,7 +4,7 @@ import json
 import io
 import re
 from datetime import date, datetime
-import google.generativeai as genai
+import anthropic
 from dotenv import load_dotenv
 import os
 import fitz  # PyMuPDF
@@ -182,10 +182,10 @@ html, body, [data-testid="stAppViewContainer"] {
 load_dotenv()
 
 def get_api_key():
-    key = os.getenv("GEMINI_API_KEY")
+    key = os.getenv("ANTHROPIC_API_KEY")
     if not key:
         try:
-            key = st.secrets.get("GEMINI_API_KEY", "")
+            key = st.secrets.get("ANTHROPIC_API_KEY", "")
         except Exception:
             pass
     return key
@@ -242,29 +242,33 @@ REGLAS:
 - Responde ÚNICAMENTE el JSON, sin texto adicional
 """
 
-# ── Llamada a Gemini Vision ───────────────────────────────────────────────────
+# ── Llamada a Claude Vision ───────────────────────────────────────────────────
 def extraer_datos_gemini(images: list, api_key: str) -> dict:
-    import base64
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    client = anthropic.Anthropic(api_key=api_key)
 
     # Construir contenido con todas las páginas como imágenes
-    content = [PROMPT_VISION]
+    content = []
     for img in images:
         content.append({
-            "mime_type": "image/jpeg",
-            "data": img["data"]
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/jpeg",
+                "data": img["data"]
+            }
         })
+    content.append({
+        "type": "text",
+        "text": PROMPT_VISION
+    })
 
-    response = model.generate_content(
-        content,
-        generation_config=genai.types.GenerationConfig(
-            temperature=0.1,
-            max_output_tokens=1500,
-        )
+    response = client.messages.create(
+        model="claude-opus-4-5",
+        max_tokens=1500,
+        messages=[{"role": "user", "content": content}]
     )
 
-    raw = response.text.strip()
+    raw = response.content[0].text.strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
 
@@ -390,20 +394,20 @@ st.markdown("""
 <div class="header-banner">
     <div class="header-badge">SEMARNAT · NOM-055</div>
     <h1>Gestor Ambiental IA — Bitácora de Residuos Peligrosos</h1>
-    <p>Extracción automática de datos desde manifiestos de entrega, transporte y recepción · Powered by Gemini AI</p>
+    <p>Extracción automática de datos desde manifiestos de entrega, transporte y recepción · Powered by Claude AI</p>
 </div>
 """, unsafe_allow_html=True)
 
 # ── Configuración de API Key ─────────────────────────────────────────────────
 with st.expander("⚙️ Configuración de API Key (Gemini)", expanded=False):
     st.markdown("""
-    <div class="card-title">GEMINI API KEY</div>
+    <div class="card-title">CLAUDE API KEY</div>
     """, unsafe_allow_html=True)
     api_key_input = st.text_input(
-        "Ingresa tu API Key de Google Gemini:",
+        "Ingresa tu API Key de Claude (Anthropic):",
         type="password",
-        placeholder="AIza...",
-        help="Obtén tu key gratis en https://aistudio.google.com/app/apikey"
+        placeholder="sk-ant-...",
+        help="Obtén tu key gratis en https://console.anthropic.com"
     )
     st.caption("También puedes definirla en un archivo `.env` como `GEMINI_API_KEY=...` o en `st.secrets`.")
 
@@ -582,7 +586,7 @@ with st.expander("ℹ️ Instrucciones de uso"):
     st.markdown("""
     **Pasos para generar tu bitácora:**
 
-    1. **Configura tu API Key** de Google Gemini (gratis en [aistudio.google.com](https://aistudio.google.com/app/apikey))
+    1. **Configura tu API Key** de Google Gemini (gratis en [aistudio.google.com](https://console.anthropic.com))
     2. **Sube los PDFs** de tus manifiestos de entrega, transporte y recepción de residuos peligrosos
     3. **Presiona "Procesar manifiestos"** — la IA extrae automáticamente todos los campos
     4. **Verifica la tabla** de datos extraídos y corrige si es necesario (sección editable)
