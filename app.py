@@ -246,6 +246,9 @@ REGLAS:
 def extraer_datos_gemini(images: list, api_key: str) -> dict:
     client = anthropic.Anthropic(api_key=api_key)
 
+    # Limitar a máximo 3 páginas para evitar errores de tamaño
+    images = images[:3]
+
     # Construir contenido con todas las páginas como imágenes
     content = []
     for img in images:
@@ -268,7 +271,16 @@ def extraer_datos_gemini(images: list, api_key: str) -> dict:
         messages=[{"role": "user", "content": content}]
     )
 
-    raw = response.content[0].text.strip()
+    # Manejar correctamente la respuesta de Claude
+    raw = ""
+    for block in response.content:
+        if hasattr(block, "text"):
+            raw = block.text.strip()
+            break
+
+    if not raw:
+        raise ValueError("Claude no devolvió texto en la respuesta.")
+
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
 
