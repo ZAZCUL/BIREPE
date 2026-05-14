@@ -192,17 +192,21 @@ def get_api_key():
 
 # ── Conversión de PDF a imágenes base64 (funciona con cualquier PDF) ─────────
 def pdf_to_images_base64(pdf_file) -> list:
-    """Convierte cada página del PDF a imagen base64 para Gemini Vision."""
+    """Convierte cada página del PDF a imagen base64 para Claude Vision."""
     try:
         import fitz
         import base64
         pdf_bytes = pdf_file.read()
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         images = []
-        for i, page in enumerate(doc):
-            mat = fitz.Matrix(200/72, 200/72)
+        # Máximo 5 páginas por PDF
+        max_paginas = min(len(doc), 5)
+        for i in range(max_paginas):
+            page = doc[i]
+            # Resolución reducida para no exceder límites de Claude
+            mat = fitz.Matrix(120/72, 120/72)
             pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
-            img_bytes = pix.tobytes("jpeg", jpg_quality=85)
+            img_bytes = pix.tobytes("jpeg", jpg_quality=70)
             b64 = base64.b64encode(img_bytes).decode("utf-8")
             images.append({"page": i+1, "data": b64})
         doc.close()
@@ -245,9 +249,6 @@ REGLAS:
 # ── Llamada a Claude Vision ───────────────────────────────────────────────────
 def extraer_datos_gemini(images: list, api_key: str) -> dict:
     client = anthropic.Anthropic(api_key=api_key)
-
-    # Limitar a máximo 3 páginas para evitar errores de tamaño
-    images = images[:3]
 
     # Construir contenido con todas las páginas como imágenes
     content = []
