@@ -282,13 +282,15 @@ def extraer_datos_gemini(images: list, api_key: str) -> dict:
     if not raw:
         raise ValueError("Claude no devolvió texto en la respuesta.")
 
+    # Limpiar backticks y espacios
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
+    raw = raw.strip()
 
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as e:
-        raise ValueError(f"La IA devolvió JSON inválido: {e}\n\nRespuesta recibida:\n{raw[:500]}")
+        raise ValueError(f"JSON inválido: {e} | Respuesta: {raw[:300]}")
 
     campos = [
         "consecutivo", "nombre_residuo", "cantidad", "cretib",
